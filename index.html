@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="sl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Twingo vožnje</title>
+<style>
+body{font-family:-apple-system,sans-serif;margin:0;padding:24px;background:#111;color:#fff;text-align:center}
+h1{font-size:22px}
+button{display:block;width:100%;margin:12px 0;padding:22px;font-size:22px;border:0;border-radius:16px;background:#2a7de1;color:#fff}
+button.red{background:#d33}
+button.grey{background:#555;font-size:16px;padding:12px}
+input{font-size:28px;width:140px;text-align:center;padding:8px;border-radius:10px;border:0}
+.hide{display:none}
+.big{font-size:20px;margin:16px 0}
+small{color:#aaa}
+</style>
+</head>
+<body>
+<h1>🚗 Twingo</h1>
+
+<div id="start" class="hide">
+  <p>Kdo vozi?</p>
+  <button onclick="begin('Jaz')">Jaz</button>
+  <button onclick="begin('Sestra')">Sestra</button>
+  <button onclick="begin('Skupaj')">Skupaj (pol-pol)</button>
+</div>
+
+<div id="run" class="hide">
+  <p class="big" id="who"></p>
+  <p><small id="since"></small></p>
+  <button class="red" onclick="finish()">Konec vožnje</button>
+  <button class="grey" onclick="cancelRide()">Prekliči (brez zapisa)</button>
+</div>
+
+<div id="confirm" class="hide">
+  <p class="big" id="route"></p>
+  <p>Prevoženo (km):</p>
+  <input id="kmIn" type="number" step="0.1" inputmode="decimal">
+  <p><small id="note"></small></p>
+  <button onclick="send()">Potrdi in zapiši</button>
+  <button class="grey" onclick="show()">Nazaj</button>
+</div>
+
+<script>
+// ===== NASTAVI TO =====
+const SCRIPT_URL = 'SEM_PRILEPI_URL_APPS_SCRIPTA';
+// ======================
+
+const KEY = 'ride';
+let ride = JSON.parse(localStorage.getItem(KEY) || 'null');
+let pending = null;
+const $ = id => document.getElementById(id);
+
+function getPos(){
+  return new Promise((res, rej) => navigator.geolocation.getCurrentPosition(
+    p => res({lat:p.coords.latitude, lon:p.coords.longitude}), rej, {enableHighAccuracy:true, timeout:20000}));
+}
+
+async function address(p){
+  try{
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${p.lat}&lon=${p.lon}&zoom=17&accept-language=sl`);
+    const a = (await r.json()).address || {};
+    const street = [a.road, a.house_number].filter(Boolean).join(' ');
+    const town = a.city || a.town || a.village || a.suburb || '';
+    return [street, town].filter(Boolean).join(', ') || `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`;
+  }catch(e){ return `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`; }
+}
+
+function haversine(a, b){
+  const R = 6371, r = x => x * Math.PI / 180;
+  const h = Math.sin(r(b.lat-a.lat)/2)**2 + Math.cos(r(a.lat))*Math.cos(r(b.lat))*Math.sin(r(b.lon-a.lon)/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+async function roadKm(a, b){
+  try{
+    const r = await fetch(`https://router.project-osrm.org/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=false`);
+    const j = await r.json();
+    return {km: j.routes[0].distance / 1000, exact:true};
+  }catch(e){
+    return {km: haversine(a, b) * 1.3, exact:false};
+  }
+}
+
+async function begin(who){
+  try{
+    const p = await getPos();
+    ride = {who, from:p, t:Date.now()};
+    localStorage.setItem(KEY, JSON.stringify(ride));
+    show();
+  }catch(e){ alert('Ni dovoljenja za lokacijo. Safari → Nastavitve → Lokacija: Dovoli.'); }
+}
+
+function show(){
+  $('start').classList.toggle('hide', !!ride);
+  $('run').classList.toggle('hide', !ride);
+  $('confirm').classList.add('hide');
+  if(ride){
+    $('who').textContent = 'Vožnja teče: ' + ride.who;
+    $('since').textContent = 'Začetek: ' + new Date(ride.t).toLocaleString('sl-SI');
+  }
+}
+
+async function finish(){
+  const b = document.querySelector('.red'); b.textContent = 'Računam…';
+  let end;
+  try{ end = await getPos(); }catch(e){ alert('Ni lokacije.'); b.textContent = 'Konec vožnje'; return; }
+  const [od, dest, r] = await Promise.all([address(ride.from), address(end), roadKm(ride.from, end)]);
+  pending = {voznik: ride.who, od, do: dest};
+  $('route').textContent = od + '  →  ' + dest;
+  $('kmIn').value = r.km.toFixed(1);
+  $('note').textContent = r.exact
+    ? 'Najkrajša cestna pot od začetka do konca. Če ste vozili drugače ali se vrnili na isto mesto, popravi km.'
+    : 'Ni povezave z navigacijo, to je ocena. Popravi, če veš bolje.';
+  $('run').classList.add('hide'); $('confirm').classList.remove('hide');
+  b.textContent = 'Konec vožnje';
+}
+
+async function send(){
+  pending.km = Number($('kmIn').value);
+  try{
+    await fetch(SCRIPT_URL, {method:'POST', mode:'no-cors', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(pending)});
+    alert('Zapisano: ' + pending.km + ' km');
+    ride = null; localStorage.removeItem(KEY); show();
+  }catch(e){ alert('Napaka pri pošiljanju, poskusi znova.'); }
+}
+
+function cancelRide(){
+  if(!confirm('Prekličem vožnjo brez zapisa?')) return;
+  ride = null; localStorage.removeItem(KEY); show();
+}
+
+show();
+</script>
+</body>
+</html>
